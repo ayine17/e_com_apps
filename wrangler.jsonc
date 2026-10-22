@@ -1,0 +1,17 @@
+{
+  // Lets Cloudflare's default deploy command (`npx wrangler deploy` at the repo root) deploy the
+  // website; the build step below compiles it first. Keep in sync with apps/web/wrangler.jsonc,
+  // which the OpenNext build reads; "name" must match the project name in the Cloudflare dashboard.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "e-com-apps",
+  "main": "apps/web/.open-next/worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": "apps/web/.open-next/assets",
+    "binding": "ASSETS"
+  },
+  // Runs before every `wrangler deploy`, so the default deploy command needs no separate build step.
+  "build": { "command": "npm run build" },
+  "observability": { "enabled": true }
+}

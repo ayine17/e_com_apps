@@ -6,6 +6,7 @@
     "apps/*"
   ],
   "scripts": {
+    "build": "npm run build:shared && npm run build:cf -w @market/web",
     "db:start": "/opt/homebrew/opt/postgresql@14/bin/pg_ctl -D .pgdata -o \"-p 5433 -k /tmp\" -l .pgdata/server.log start",
     "db:stop": "/opt/homebrew/opt/postgresql@14/bin/pg_ctl -D .pgdata stop",
     "build:shared": "npm run build -w @market/shared",

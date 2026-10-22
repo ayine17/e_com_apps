@@ -48,14 +48,15 @@ The repo holds two apps that deploy to different places:
 | `apps/web` (website) | Cloudflare Workers, via `@opennextjs/cloudflare` | Static pages and the `/api` proxy run at the edge |
 | `apps/api` (API) | A Node.js host with PostgreSQL (Render, Railway, Fly.io) | Needs a database, scheduled jobs, disk for uploads and the `sharp` image library, which Workers don't provide |
 
-**Website on Cloudflare** (Workers & Pages → your project → Settings → Build):
+**Website on Cloudflare:** Cloudflare's default deploy command, `npx wrangler deploy`, works as-is.
+The root `wrangler.jsonc` runs `npm run build` (shared package, then the OpenNext build of
+`apps/web`) and deploys the result. In the dashboard (Workers & Pages → your project → Settings):
 
-- Root directory: `/` (the repo root, so the shared package installs)
-- Build command: leave empty
-- Deploy command: `npm run deploy:web`
+- Root directory: `/`
 - Build variable `API_URL`: your API's public URL, e.g. `https://api.yourdomain.com`. It's read at build
   time, so redeploy after changing it.
-- The Worker name in `apps/web/wrangler.jsonc` must match the project name in the dashboard.
+- The Worker name (`e-com-apps`) in `wrangler.jsonc` and `apps/web/wrangler.jsonc` must match the
+  project name in the dashboard.
 
 Test the Cloudflare build locally with `npm run build:shared && npm run preview:cf -w @market/web`.
 

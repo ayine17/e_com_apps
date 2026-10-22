@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.next/
+.pgdata/
+.env
+apps/api/uploads/
+*.tsbuildinfo
+.DS_Store
+~$*

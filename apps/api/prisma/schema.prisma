@@ -1,0 +1,568 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  BUYER
+  SELLER
+  AGENT
+  ADMIN
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum ProductStatus {
+  ACTIVE
+  PENDING_REVIEW
+  REMOVED
+}
+
+enum Condition {
+  NEW
+  USED
+}
+
+enum OrderState {
+  PENDING_PAYMENT
+  PAID
+  SHIPPED
+  DELIVERED
+  RETURN_REQUESTED
+  DISPUTED
+  COMPLETED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  CANCELLED
+}
+
+enum RiskAction {
+  ALLOW
+  STEP_UP
+  HOLD
+  BLOCK
+}
+
+enum DisputeStage {
+  OPEN
+  ESCALATED
+  RESOLVED
+}
+
+enum DisputeReason {
+  NOT_RECEIVED
+  NOT_AS_DESCRIBED
+  DAMAGED
+  WRONG_ITEM
+  /// Opened by the seller when a returned item arrives damaged, used or missing.
+  RETURN_PROBLEM
+}
+
+enum ReportTarget {
+  PRODUCT
+  USER
+  MESSAGE
+}
+
+enum ReportStatus {
+  OPEN
+  ACTIONED
+  DISMISSED
+}
+
+model User {
+  id          String    @id @default(uuid()) @db.Uuid
+  email       String    @unique
+  name        String?
+  roles       Role[]    @default([BUYER])
+  suspendedAt DateTime?
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+  /// Which emails the user wants: { orders: bool, alerts: bool }. In-app notifications are always on.
+  emailPrefs  Json      @default("{\"orders\": true, \"alerts\": true}")
+
+  addresses       Address[]
+  store           Store?
+  orders          Order[]          @relation("BuyerOrders")
+  messages        Message[]
+  reports         Report[]         @relation("Reporter")
+  blocks          UserBlock[]      @relation("Blocker")
+  blockedBy       UserBlock[]      @relation("Blocked")
+  paymentAttempts PaymentAttempt[]
+  reviews         Review[]
+  wishlist        WishlistItem[]
+  notifications   Notification[]
+  devices         KnownDevice[]
+}
+
+model OtpCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  email     String
+  codeHash  String
+  attempts  Int       @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([email, createdAt])
+}
+
+model Address {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       String?
+  line1       String
+  city        String
+  postcode    String?
+  country     String   @db.Char(2)
+  lat         Float
+  lng         Float
+  /// Normalised form used to spot one address shared by many accounts.
+  fingerprint String
+  createdAt   DateTime @default(now())
+
+  @@index([fingerprint])
+}
+
+model Store {
+  id                    String             @id @default(uuid()) @db.Uuid
+  ownerId               String             @unique @db.Uuid
+  owner                 User               @relation(fields: [ownerId], references: [id])
+  name                  String
+  slug                  String             @unique
+  description           String?
+  verificationStatus    VerificationStatus @default(PENDING)
+  returnPolicyDays      Int                @default(0)
+  city                  String
+  country               String             @db.Char(2)
+  lat                   Float
+  lng                   Float
+  createdAt             DateTime           @default(now())
+  /// Orders with a subtotal at or above this ship free (seller pays delivery). Null = no threshold.
+  freeShippingOverMinor Int?
+  /// The seller's connected account at the payment provider (e.g. Stripe Connect "acct_...").
+  payoutAccountRef      String?
+  /// Payouts pause for 72 hours after the payout account changes (spec section 6.4).
+  payoutHoldUntil       DateTime?
+
+  products Product[]
+  orders   Order[]
+  reviews  Review[]
+  coupons  Coupon[]
+  payouts  Payout[]
+}
+
+model Category {
+  id       String     @id @default(uuid()) @db.Uuid
+  slug     String     @unique
+  name     String
+  parentId String?    @db.Uuid
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+}
+
+model Product {
+  id          String        @id @default(uuid()) @db.Uuid
+  storeId     String        @db.Uuid
+  store       Store         @relation(fields: [storeId], references: [id])
+  categoryId  String        @db.Uuid
+  category    Category      @relation(fields: [categoryId], references: [id])
+  title       String
+  description String
+  priceMinor  Int
+  currency    String        @db.Char(3)
+  stock       Int
+  condition   Condition
+  weightGrams Int
+  lengthCm    Int
+  widthCm     Int
+  heightCm    Int
+  images      String[]
+  status      ProductStatus @default(ACTIVE)
+  reviewNote  String?
+  viewCount   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  orderItems   OrderItem[]
+  reviews      Review[]
+  wishlistedBy WishlistItem[]
+
+  @@index([status, categoryId])
+  @@index([storeId])
+}
+
+model Order {
+  id              String     @id @default(uuid()) @db.Uuid
+  /// Orders created in the same checkout share a group id and a single payment.
+  checkoutId      String     @db.Uuid
+  buyerId         String     @db.Uuid
+  buyer           User       @relation("BuyerOrders", fields: [buyerId], references: [id])
+  storeId         String     @db.Uuid
+  store           Store      @relation(fields: [storeId], references: [id])
+  state           OrderState @default(PENDING_PAYMENT)
+  currency        String     @db.Char(3)
+  subtotalMinor   Int
+  shippingMinor   Int
+  /// Platform commission, deducted from the seller's share on release.
+  feeMinor        Int
+  totalMinor      Int
+  refundedMinor   Int        @default(0)
+  shippingService String
+  shippingAddress Json
+  riskScore       Int        @default(0)
+  riskAction      RiskAction @default(ALLOW)
+  riskHits        Json       @default("[]")
+  /// True while a risky order waits for manual review; the seller may not ship.
+  riskHold        Boolean    @default(false)
+  paymentRef      String?
+  shipBy          DateTime?
+  releaseAt       DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  /// Discount from a seller coupon or free-delivery threshold, already taken off totalMinor.
+  discountMinor   Int        @default(0)
+  couponCode      String?
+  /// Refunds are recorded in the database first, then sent to the provider (retried until DONE).
+  refundStatus    String     @default("NONE")
+  refundError     String?
+
+  items         OrderItem[]
+  events        OrderEvent[]
+  shipment      Shipment?
+  dispute       Dispute?
+  messages      Message[]
+  reviews       Review[]
+  returnRequest ReturnRequest?
+
+  @@index([buyerId, createdAt])
+  @@index([storeId, state])
+  @@index([state, releaseAt])
+  @@index([checkoutId])
+}
+
+model OrderItem {
+  id             String  @id @default(uuid()) @db.Uuid
+  orderId        String  @db.Uuid
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String  @db.Uuid
+  product        Product @relation(fields: [productId], references: [id])
+  title          String
+  unitPriceMinor Int
+  quantity       Int
+}
+
+model OrderEvent {
+  id        String      @id @default(uuid()) @db.Uuid
+  orderId   String      @db.Uuid
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromState OrderState?
+  toState   OrderState
+  /// Null when the system (a scheduled job or webhook) made the change.
+  actorId   String?     @db.Uuid
+  note      String?
+  createdAt DateTime    @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model Shipment {
+  id               String    @id @default(uuid()) @db.Uuid
+  orderId          String    @unique @db.Uuid
+  order            Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  carrier          String
+  trackingNumber   String
+  /// Hash of the 4-digit code the buyer gives the courier as proof of delivery.
+  deliveryCodeHash String
+  codeAttempts     Int       @default(0)
+  deliveredAt      DateTime?
+  deliveredVia     String?
+  createdAt        DateTime  @default(now())
+
+  @@unique([carrier, trackingNumber])
+}
+
+/// Double-entry ledger: every transaction's entries sum to zero.
+model LedgerEntry {
+  id          String   @id @default(uuid()) @db.Uuid
+  txnId       String   @db.Uuid
+  account     String
+  amountMinor Int
+  currency    String   @db.Char(3)
+  orderId     String?  @db.Uuid
+  memo        String
+  createdAt   DateTime @default(now())
+
+  @@index([account])
+  @@index([txnId])
+  @@index([orderId])
+}
+
+model PaymentAttempt {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  user        User     @relation(fields: [userId], references: [id])
+  checkoutId  String   @db.Uuid
+  amountMinor Int
+  currency    String   @db.Char(3)
+  succeeded   Boolean
+  providerRef String?
+  failureCode String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Dispute {
+  id              String        @id @default(uuid()) @db.Uuid
+  orderId         String        @unique @db.Uuid
+  order           Order         @relation(fields: [orderId], references: [id])
+  openedById      String        @db.Uuid
+  reason          DisputeReason
+  description     String
+  evidence        String[]
+  stage           DisputeStage  @default(OPEN)
+  /// The order state to restore if the dispute ends with release to the seller.
+  previousState   OrderState
+  sellerRespondBy DateTime
+  offerKind       String?
+  offerMinor      Int?
+  offerNote       String?
+  offerDeclined   Boolean       @default(false)
+  outcome         String?
+  outcomeMinor    Int?
+  reasoning       String?
+  decidedById     String?       @db.Uuid
+  decidedAt       DateTime?
+  escalatedAt     DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@index([stage, sellerRespondBy])
+}
+
+model Message {
+  id          String   @id @default(uuid()) @db.Uuid
+  orderId     String   @db.Uuid
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  senderId    String   @db.Uuid
+  sender      User     @relation(fields: [senderId], references: [id])
+  body        String
+  attachments String[]
+  /// Off-platform signals detected in the body (email, phone, link, payment request).
+  flags       String[]
+  createdAt   DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model Report {
+  id         String       @id @default(uuid()) @db.Uuid
+  reporterId String       @db.Uuid
+  reporter   User         @relation("Reporter", fields: [reporterId], references: [id])
+  targetType ReportTarget
+  targetId   String       @db.Uuid
+  reason     String
+  status     ReportStatus @default(OPEN)
+  resolvedBy String?      @db.Uuid
+  createdAt  DateTime     @default(now())
+
+  @@index([status, createdAt])
+}
+
+model UserBlock {
+  blockerId String   @db.Uuid
+  blocker   User     @relation("Blocker", fields: [blockerId], references: [id])
+  blockedId String   @db.Uuid
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@id([blockerId, blockedId])
+}
+
+/// Every risk decision, kept so rules can be tuned and later used to train a model.
+model RiskEvent {
+  id        String     @id @default(uuid()) @db.Uuid
+  kind      String
+  userId    String     @db.Uuid
+  subjectId String?    @db.Uuid
+  score     Int
+  action    RiskAction
+  hits      Json
+  /// Analyst label once reviewed: "fraud" or "legit".
+  label     String?
+  createdAt DateTime   @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String   @db.Uuid
+  action    String
+  subjectId String?
+  details   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// Development stand-in for an email provider: every email is stored here.
+model EmailOutbox {
+  id        String   @id @default(uuid()) @db.Uuid
+  to        String
+  subject   String
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([to, createdAt])
+}
+
+model Review {
+  id              String    @id @default(uuid()) @db.Uuid
+  orderId         String    @db.Uuid
+  order           Order     @relation(fields: [orderId], references: [id])
+  productId       String    @db.Uuid
+  product         Product   @relation(fields: [productId], references: [id])
+  storeId         String    @db.Uuid
+  store           Store     @relation(fields: [storeId], references: [id])
+  authorId        String    @db.Uuid
+  author          User      @relation(fields: [authorId], references: [id])
+  rating          Int
+  body            String?
+  sellerReply     String?
+  sellerRepliedAt DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([orderId, productId])
+  @@index([productId, createdAt])
+  @@index([storeId])
+}
+
+enum ReturnStatus {
+  REQUESTED
+  SHIPPED_BACK
+  RECEIVED
+  REJECTED
+}
+
+model ReturnRequest {
+  id             String       @id @default(uuid()) @db.Uuid
+  orderId        String       @unique @db.Uuid
+  order          Order        @relation(fields: [orderId], references: [id])
+  reason         String
+  description    String
+  evidence       String[]
+  /// BUYER for change of mind, SELLER when the item was faulty or wrong.
+  returnPaidBy   String
+  /// Amount the buyer gets back once the return arrives.
+  refundMinor    Int
+  status         ReturnStatus @default(REQUESTED)
+  carrier        String?
+  trackingNumber String?
+  shippedBackAt  DateTime?
+  /// If the seller hasn't confirmed or disputed by then, the buyer is refunded automatically.
+  autoRefundAt   DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([status, autoRefundAt])
+}
+
+model WishlistItem {
+  userId      String   @db.Uuid
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId   String   @db.Uuid
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// Price when saved, so a later drop can be announced.
+  priceAtSave Int
+  createdAt   DateTime @default(now())
+
+  @@id([userId, productId])
+  @@index([productId])
+}
+
+model Coupon {
+  id               String    @id @default(uuid()) @db.Uuid
+  storeId          String    @db.Uuid
+  store            Store     @relation(fields: [storeId], references: [id])
+  code             String
+  /// PERCENT (value in basis points) or FIXED (value in minor units).
+  kind             String
+  value            Int
+  minSubtotalMinor Int       @default(0)
+  maxUses          Int?
+  usedCount        Int       @default(0)
+  expiresAt        DateTime?
+  active           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+
+  @@unique([storeId, code])
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model KnownDevice {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Random id stored in a long-lived cookie on the device.
+  deviceId  String
+  userAgent String
+  firstSeen DateTime @default(now())
+  lastSeen  DateTime @default(now())
+
+  @@unique([userId, deviceId])
+  @@index([deviceId])
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+model Payout {
+  id          String       @id @default(uuid()) @db.Uuid
+  storeId     String       @db.Uuid
+  store       Store        @relation(fields: [storeId], references: [id])
+  amountMinor Int
+  currency    String       @db.Char(3)
+  destination String
+  status      PayoutStatus @default(PENDING)
+  providerRef String?
+  error       String?
+  createdAt   DateTime     @default(now())
+  paidAt      DateTime?
+
+  @@index([storeId, createdAt])
+  @@index([status])
+}
+
+/// Admin-editable business rules (spec section 2.10). Missing keys fall back to environment defaults.
+model PlatformSetting {
+  key       String   @id
+  value     Int
+  updatedBy String?  @db.Uuid
+  updatedAt DateTime @updatedAt
+}

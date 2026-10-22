@@ -7,3 +7,6 @@ apps/api/uploads/
 *.tsbuildinfo
 .DS_Store
 ~$*
+.open-next/
+.wrangler/
+.dev.vars

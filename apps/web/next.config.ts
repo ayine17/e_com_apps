@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const API_URL = process.env.API_URL ?? "http://localhost:4000";
+if (process.env.NODE_ENV === "production" && !process.env.API_URL) {
+  console.warn("\n⚠ API_URL is not set: the deployed site will proxy /api to localhost and every request will fail.\n  Set API_URL to your API's public URL in the build environment.\n");
+}
 const isDev = process.env.NODE_ENV !== "production";
 
 // Strict Content Security Policy (spec section 8.3). Next's dev server needs eval for hot reload.

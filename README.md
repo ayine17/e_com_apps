@@ -39,6 +39,31 @@ and all notifications appear in the **development inbox** at http://localhost:30
 At checkout, a development-only menu chooses what the fake payment provider does: succeed,
 decline, or flag elevated fraud risk.
 
+## Deploying
+
+The repo holds two apps that deploy to different places:
+
+| App | Where | Why |
+|---|---|---|
+| `apps/web` (website) | Cloudflare Workers, via `@opennextjs/cloudflare` | Static pages and the `/api` proxy run at the edge |
+| `apps/api` (API) | A Node.js host with PostgreSQL (Render, Railway, Fly.io) | Needs a database, scheduled jobs, disk for uploads and the `sharp` image library, which Workers don't provide |
+
+**Website on Cloudflare** (Workers & Pages → your project → Settings → Build):
+
+- Root directory: `/` (the repo root, so the shared package installs)
+- Build command: leave empty
+- Deploy command: `npm run deploy:web`
+- Build variable `API_URL`: your API's public URL, e.g. `https://api.yourdomain.com`. It's read at build
+  time, so redeploy after changing it.
+- The Worker name in `apps/web/wrangler.jsonc` must match the project name in the dashboard.
+
+Test the Cloudflare build locally with `npm run build:shared && npm run preview:cf -w @market/web`.
+
+**API:** set the variables from `apps/api/.env.example`, with `NODE_ENV=production`,
+`WEB_ORIGIN` set to the website's URL, and a managed PostgreSQL `DATABASE_URL`. Build with
+`npm ci && npm run build:shared && npx -w @market/api prisma migrate deploy && npm run build -w @market/api`
+and start with `npm start -w @market/api`.
+
 ## Tests
 
 ```bash

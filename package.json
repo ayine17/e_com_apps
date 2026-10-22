@@ -12,6 +12,7 @@
     "dev:api": "npm run start:dev -w @market/api",
     "dev:web": "npm run dev -w @market/web",
     "test": "npm test -w @market/shared && npm test -w @market/api",
-    "typecheck": "npm run build:shared && npm run typecheck -w @market/api && npm run typecheck -w @market/web"
+    "typecheck": "npm run build:shared && npm run typecheck -w @market/api && npm run typecheck -w @market/web",
+    "deploy:web": "npm run build:shared && npm run deploy -w @market/web"
   }
 }
